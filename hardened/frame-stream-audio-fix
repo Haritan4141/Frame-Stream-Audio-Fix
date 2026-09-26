@@ -1,0 +1,5 @@
+#!/bin/bash
+# Review candidate only. Uses existing Python; no download/install side effects.
+set -euo pipefail
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+exec /usr/bin/python3 -I -B "$here/frame_audio_guard.py" "$@"

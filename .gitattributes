@@ -1,0 +1,8 @@
+* text=auto eol=lf
+# Do not convert reviewed runtime bytes on Windows.
+hardened/frame_audio_guard.py -text
+hardened/frame-stream-audio-fix -text
+hardened/frame-stream-audio-fix.service -text
+hardened/LICENSE -text
+LICENSE -text
+frame-stream-audio-fix.sh -text
