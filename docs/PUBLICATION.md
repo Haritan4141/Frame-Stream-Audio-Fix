@@ -5,6 +5,7 @@
 - Baseline: `69669be81ee3571125ef3ff8a771523b5138c13b`
 - Keep upstream ancestry intact. `main` is upstream-only; review updates before fast-forwarding it. No automatic upstream sync.
 - `hardened` contains the separately reviewed candidate. Do not install merely because this branch moved. Review each new revision and pin a full commit SHA outside the moving branch.
+- `hardened-transient-lifecycle` is a LOCAL-only successor candidate based on `141f7a2ddd4a93f1b2030077e7a6a59ec4dae125`. Keep the baseline commit and deployed runtime/state untouched. The new branch is not device deployment authority.
 - Deployed commit at initial publication: **NONE / NOT_INSTALLED**. Repository publication is not headset deployment.
 - Preserve MIT LICENSE/copyright. The original root script is comparison evidence, not the hardened installer.
 - Publication includes an explicit allowlist of runtime, tests, workflow and generic docs. Excludes private audit logs, actual boot IDs, network identity, SSH materials, credentials, generated logs, user-specific local paths and private management files.

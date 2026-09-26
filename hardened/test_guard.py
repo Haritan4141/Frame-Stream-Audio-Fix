@@ -66,7 +66,9 @@ class FakeBackend:
                                               "nice": expected["nice"] if self.partial_demote else -11}
         self.persist()
         if self.partial_demote:
-            raise g.GuardError("mock RTKit failed after scheduler changed")
+            # Real busctl nonzero/timeouts are uncertain even after a partial
+            # mutation; never pretend they are a pre-dispatch/synchronous error.
+            raise g.RpcUncertain("mock RTKit failed after scheduler changed")
 
     def set_nice(self, rec, expected, value):
         self.require(rec, expected)
@@ -260,11 +262,12 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(len(self.store.load()), 2)
         self.assertEqual(self.backend.calls.count(("demote", 11)), 1)
 
-    def test_partial_demote_error_immediately_recovers(self):
+    def test_partial_demote_error_uncertain_retains_state(self):
         self.backend.partial_demote = True
         self.assertFalse(self.engine.demote_all())
-        self.assertEqual(self.store.load(), [])
-        self.assertEqual(self.backend.threads["11"]["original"], snapshot()["original"])
+        self.assertEqual(self.store.load()[0]["phase"], "DEMOTE_IN_FLIGHT")
+        self.assertEqual(self.backend.threads["11"]["original"], {"policy": g.NORMAL, "rtprio": 0, "nice": 0})
+        self.assertEqual(self.backend.calls, [("demote", 11)])
 
     def test_unsupported_policy_and_nice_never_demoted(self):
         for policy, nice in ((g.RESET | 1, 0), (1, 0), (2, 0), (3, 0), (5, 0), (6, 0), (12345, 0), (g.RR, -11)):

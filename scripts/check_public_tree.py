@@ -14,6 +14,7 @@ ALLOW = {
     'hardened/frame_audio_guard.py', 'hardened/frame-stream-audio-fix',
     'hardened/frame-stream-audio-fix.service', 'hardened/test_guard.py',
     'hardened/reproduce_upstream_filter.sh',
+    'hardened/test_lifecycle.py', 'docs/TRANSIENT-LIFECYCLE.md',
 }
 files = set(subprocess.check_output(['git', 'ls-files'], cwd=ROOT, text=True).splitlines())
 assert files == ALLOW, 'Unexpected/missing tracked files: ' + str(sorted(files ^ ALLOW))

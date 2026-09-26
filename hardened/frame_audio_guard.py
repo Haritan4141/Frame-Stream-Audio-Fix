@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import copy
+import datetime
 import hashlib
 import json
 import os
@@ -162,6 +163,69 @@ class StateStore:
         body = {"version": 1, "records": records}
         atomic_bytes(self.path, canonical({"body": body, "sha256": hashlib.sha256(canonical(body)).hexdigest()}) + b"\n")
 
+    def retirement_path(self, rec):
+        directory = self.root / "retired"
+        path = directory / (hashlib.sha256(canonical(rec)).hexdigest() + ".json")
+        if self.validate_paths:
+            safe_path(directory, directory=True, create=True, private=True)
+            safe_path(path, private=True)
+        else:  # fault-injection filesystem, never used by the runtime entrypoint
+            directory.mkdir(mode=0o700, exist_ok=True)
+        sync_dir(directory.parent)
+        return path
+
+    def retirement(self, rec):
+        """Read a previously committed proof; never overwrite/reinterpret it."""
+        path = self.retirement_path(rec)
+        if not path.exists():
+            return None
+        try:
+            if path.stat().st_size > 32_000:
+                raise ValueError("oversize")
+            obj = json.loads(path.read_text(encoding="utf-8"))
+            body = obj["body"]
+            if (set(obj) != {"body", "sha256"} or
+                    hashlib.sha256(canonical(body)).hexdigest() != obj["sha256"] or
+                    set(body) != {"version", "record", "reason", "at", "previous_state_sha256",
+                                  "previous_body_sha256", "evidence"} or body["version"] != 1 or
+                    body["record"] != rec or body["reason"] != retirement_reason(rec, body["evidence"])):
+                raise ValueError("archive schema/checksum/proof")
+            datetime.datetime.fromisoformat(body["at"])
+            for key in ("previous_state_sha256", "previous_body_sha256"):
+                if not re.fullmatch(r"[a-f0-9]{64}", body[key]):
+                    raise ValueError("previous checksum")
+        except (ValueError, TypeError, KeyError, UnicodeError) as exc:
+            raise GuardError("RETIREMENT_ARCHIVE_CORRUPT_NO_TOUCH") from exc
+        # Retry after rename succeeded but fsync failed must durably seal the
+        # existing bytes, not assume that mere visibility means durability.
+        # Windows mock tests require a writable descriptor for fsync too.
+        # r+b neither truncates nor changes the archived bytes.
+        with path.open("r+b") as stream:
+            os.fsync(stream.fileno())
+        sync_dir(path.parent)
+        sync_dir(path.parent.parent)
+        return body
+
+    def retire(self, rec, evidence=None):
+        """Caller holds the single-writer lock. Archive first, active state last."""
+        records = self.load()
+        if rec not in records:
+            raise GuardError("RETIREMENT_RECORD_NOT_ACTIVE")
+        body = self.retirement(rec)
+        if body is None:
+            reason = retirement_reason(rec, evidence)
+            previous = self.path.read_bytes()
+            body = {"version": 1, "record": copy.deepcopy(rec), "reason": reason,
+                    "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "previous_state_sha256": hashlib.sha256(previous).hexdigest(),
+                    "previous_body_sha256": json.loads(previous)["sha256"],
+                    "evidence": evidence}
+            atomic_bytes(self.retirement_path(rec), canonical({"body": body,
+                "sha256": hashlib.sha256(canonical(body)).hexdigest()}) + b"\n")
+            body = self.retirement(rec)  # readback + durability before removal
+        self.save([r for r in records if r != rec])
+        return body
+
 
 def validate_record(rec):
     if set(rec) != {"identity", "original", "phase"} or rec["phase"] not in {
@@ -190,11 +254,39 @@ def same(a, b):
     return a["identity"] == b["identity"]
 
 
+def retirement_reason(rec, evidence):
+    """Only affirmative, same-boot lifetime proof; never general read errors."""
+    if rec["phase"] not in {"TRACKED", "WRITE_AHEAD"}:
+        raise GuardError("RPC_COMPLETION_UNKNOWN_MANUAL_REVIEW_NO_TOUCH")
+    ident = rec["identity"]
+    if not isinstance(evidence, dict) or set(evidence) != {"boot_id", "observations"}:
+        raise GuardError("INVALID_LIFETIME_PROOF")
+    observations = evidence["observations"]
+    if (evidence["boot_id"] != ident["boot_id"] or not isinstance(observations, list) or
+            len(observations) != 2 or observations[0] != observations[1]):
+        raise GuardError("AMBIGUOUS_LIFETIME_PROOF")
+    observed = observations[0]
+    if observed == {"exists": False}:
+        kind = "EXITED"
+    elif (isinstance(observed, dict) and set(observed) == {"exists", "pid_start", "tid_start"}
+          and observed["exists"] is True
+          and all(type(observed[k]) is int and observed[k] > 0 for k in ("pid_start", "tid_start"))):
+        if observed["pid_start"] > ident["pid_start"]:
+            kind = "PID_REUSED"
+        elif observed["pid_start"] == ident["pid_start"] and observed["tid_start"] > ident["tid_start"]:
+            kind = "TID_REUSED"
+        else:
+            raise GuardError("NO_PROOF_OF_OLD_THREAD_EXIT")
+    else:
+        raise GuardError("INVALID_LIFETIME_OBSERVATION")
+    return f"RETIRED_{kind}_{rec['phase']}_THREAD"
+
+
 class Engine:
     def __init__(self, store, backend, logger=emit):
         self.store, self.backend, self.log = store, backend, logger
 
-    def rpc(self, rec, records, phase, action):
+    def rpc(self, rec, records, phase, action, verify):
         # A crash after dispatch but before acknowledgement is NOT equivalent
         # to a completed request. Never erase this uncertainty by observing one
         # apparently restored snapshot; a delayed RPC could still change it.
@@ -205,39 +297,80 @@ class Engine:
         except RpcUncertain:
             raise
         except (GuardError, OSError) as exc:
-            # Backend contract: these errors occurred before dispatch or came
-            # from a synchronous syscall, not from an ambiguous D-Bus request.
+            # Backend contract: before dispatch / synchronous syscall only.
             rec["phase"] = "TRACKED"
             self.store.save(records)
             raise exc
+        # New writes keep uncertainty until the independent getter post-check
+        # passes. Legacy v1 TRACKED implies known completion, not this check.
+        verify()
         rec["phase"] = "TRACKED"
         self.store.save(records)
+
+    def verify(self, rec, expected):
+        actual = self.backend.snapshot(rec["identity"])
+        if not same(rec, actual) or actual["original"] != expected:
+            raise GuardError("RPC_POST_VERIFY_FAILED")
+
+    def finish_restore(self, rec):
+        # RR first, then nice, both while RESTORE_IN_FLIGHT is durable. This
+        # avoids persisting TRACKED with an ambiguous half-restored nice value.
+        intermediate = {"policy": RR, "rtprio": rec["original"]["rtprio"], "nice": -11}
+        self.verify(rec, intermediate)
+        self.backend.set_nice(rec, intermediate, rec["original"]["nice"])
+        self.verify(rec, rec["original"])
+
+    def current_or_retire(self, rec):
+        # IN_FLIGHT is checked before *any* archive/probe attempt. An exited
+        # target does not prove a queued D-Bus request has completed.
+        if rec["phase"].endswith("_IN_FLIGHT"):
+            raise GuardError("RPC_COMPLETION_UNKNOWN_MANUAL_REVIEW_NO_TOUCH")
+        archived = self.store.retirement(rec)
+        proof = None
+        if archived is None:
+            probe = getattr(self.backend, "lifetime_proof", None)
+            proof = probe(rec["identity"]) if probe else None
+        if archived is not None or proof is not None:
+            retired = self.store.retire(rec, proof)
+            self.log(retired["reason"], pid=rec["identity"]["pid"], tid=rec["identity"]["tid"],
+                     note="lifetime ended; NOT a scheduler restoration", archived_at=retired["at"])
+            return None
+        try:
+            actual = self.backend.snapshot(rec["identity"])
+        except (FileNotFoundError, ProcessLookupError):
+            # A task can exit between the probe and the getter. Do not use the
+            # getter exception itself as proof; corroborate using task lifetime.
+            proof = probe(rec["identity"]) if probe else None
+            if proof is None:
+                raise
+            retired = self.store.retire(rec, proof)
+            self.log(retired["reason"], pid=rec["identity"]["pid"], tid=rec["identity"]["tid"],
+                     note="lifetime ended after probe; NOT a scheduler restoration", archived_at=retired["at"])
+            return None
+        if not same(rec, actual):
+            raise GuardError("IDENTITY_MISMATCH_NO_TOUCH")
+        return actual
 
     def restore_all(self):
         records = self.store.load()
         for rec in list(records):
             ident, orig = rec["identity"], rec["original"]
             try:
-                actual = self.backend.snapshot(ident)
-                if not same(rec, actual):
-                    raise GuardError("IDENTITY_MISMATCH_NO_TOUCH")
-                if rec["phase"].endswith("_IN_FLIGHT"):
-                    raise GuardError("RPC_COMPLETION_UNKNOWN_MANUAL_REVIEW_NO_TOUCH")
+                actual = self.current_or_retire(rec)
+                if actual is None:
+                    # Preserve references for later loop records: rpc() changes
+                    # their phase in this same list before persisting dispatch.
+                    records = [r for r in records if r != rec]
+                    continue
                 current = actual["original"]
+                if rec["phase"] == "WRITE_AHEAD" and current != orig:
+                    raise GuardError("WRITE_AHEAD_CHANGED_EXTERNALLY_NO_TOUCH")
                 if current != orig:
-                    # Do not overwrite a scheduler changed by an unrelated actor.
-                    if current["policy"] not in (NORMAL, RR) or current["nice"] not in (orig["nice"], -11):
+                    if current != {"policy": NORMAL, "rtprio": 0, "nice": -11}:
                         raise GuardError("UNEXPECTED_STATE_NO_TOUCH")
-                    if current["rtprio"] != (orig["rtprio"] if current["policy"] == RR else 0):
-                        raise GuardError("UNEXPECTED_PRIORITY_NO_TOUCH")
-                    if current["nice"] != orig["nice"]:
-                        self.backend.set_nice(rec, current, orig["nice"])
-                    actual = self.backend.snapshot(ident)
-                    if not same(rec, actual) or actual["original"]["nice"] != orig["nice"]:
-                        raise GuardError("NICE_RESTORE_VERIFY_FAILED")
-                    if actual["original"]["policy"] != orig["policy"]:
-                        self.rpc(rec, records, "RESTORE_IN_FLIGHT",
-                                 lambda: self.backend.restore_rr(rec, actual["original"]))
+                    self.rpc(rec, records, "RESTORE_IN_FLIGHT",
+                             lambda: self.backend.restore_rr(rec, current),
+                             lambda: self.finish_restore(rec))
                 verified = self.backend.snapshot(ident)
                 if not same(rec, verified) or verified["original"] != orig:
                     raise GuardError("RESTORE_VERIFY_FAILED")
@@ -259,8 +392,10 @@ class Engine:
             try:
                 if rec["phase"] != "TRACKED":
                     raise GuardError("TRACKED_OPERATION_INCOMPLETE")
-                current = self.backend.snapshot(rec["identity"])
-                if not same(rec, current) or current["original"] != {"policy": NORMAL, "rtprio": 0, "nice": -11}:
+                current = self.current_or_retire(rec)
+                if current is None:
+                    continue
+                if current["original"] != {"policy": NORMAL, "rtprio": 0, "nice": -11}:
                     raise GuardError("TRACKED_THREAD_CHANGED")
             except (OSError, GuardError) as exc:
                 self.log("WARNING_ACTIVE_STATE_UNRESOLVED", reason=str(exc))
@@ -280,7 +415,8 @@ class Engine:
             records.append(rec)
             self.store.save(records)  # MUST complete before any scheduler mutation
             try:
-                self.rpc(rec, records, "DEMOTE_IN_FLIGHT", lambda: self.backend.demote(rec, orig))
+                self.rpc(rec, records, "DEMOTE_IN_FLIGHT", lambda: self.backend.demote(rec, orig),
+                         lambda: self.verify(rec, {"policy": NORMAL, "rtprio": 0, "nice": -11}))
                 actual = self.backend.snapshot(rec["identity"])
                 if not same(rec, actual) or actual["original"] != {"policy": NORMAL, "rtprio": 0, "nice": -11}:
                     raise GuardError("DEMOTE_VERIFY_FAILED")
@@ -299,10 +435,53 @@ def proc_stat(path):
     raw = path.read_text()
     stop = raw.rfind(")")
     fields = raw[stop + 2:].split()
-    return raw[raw.find("(") + 1:stop], int(fields[19])
+    try:
+        if stop < 0 or raw.find("(") < 0 or len(fields) < 20 or int(fields[19]) < 1:
+            raise ValueError("malformed stat")
+        return raw[raw.find("(") + 1:stop], int(fields[19])
+    except (ValueError, IndexError) as exc:
+        raise GuardError("PROC_STAT_READ_INVALID") from exc
 
 
 class LinuxBackend:
+    def task_lifetime(self, pid, tid):
+        proc = Path("/proc") / str(pid)
+        task = proc / "task" / str(tid)
+        try:
+            _, tid_start = proc_stat(task / "stat")
+        except FileNotFoundError:
+            try:
+                task.stat()  # missing stat alone is NOT task-exit evidence
+            except FileNotFoundError:
+                # A dead group leader can hide /proc/pid/task while another
+                # thread lives. Direct /proc/tid is addressable (not listed).
+                # Both must be absent; visibility ambiguity remains blocked.
+                try:
+                    (Path("/proc") / str(tid)).stat()
+                except FileNotFoundError:
+                    return {"exists": False}
+                raise GuardError("DIRECT_TID_PRESENT_TASK_PATH_ABSENT")
+            raise GuardError("TASK_PRESENT_STAT_MISSING")
+        _, pid_start = proc_stat(proc / "stat")
+        if proc_stat(task / "stat")[1] != tid_start or proc_stat(proc / "stat")[1] != pid_start:
+            raise GuardError("LIFETIME_CHANGED_DURING_READ")
+        return {"exists": True, "pid_start": pid_start, "tid_start": tid_start}
+
+    def lifetime_proof(self, ident):
+        boot_path = Path("/proc/sys/kernel/random/boot_id")
+        boot = boot_path.read_text().strip()
+        if boot != ident["boot_id"]:
+            raise GuardError("DIFFERENT_BOOT_MANUAL_REVIEW")
+        observations = [self.task_lifetime(ident["pid"], ident["tid"]) for _ in range(2)]
+        if boot_path.read_text().strip() != boot or observations[0] != observations[1]:
+            raise GuardError("LIFETIME_READ_UNSTABLE")
+        observed = observations[0]
+        if observed.get("exists") and (observed["pid_start"], observed["tid_start"]) == (ident["pid_start"], ident["tid_start"]):
+            return None
+        proof = {"boot_id": boot, "observations": observations}
+        retirement_reason({"identity": ident, "phase": "TRACKED"}, proof)
+        return proof
+
     @staticmethod
     def command(args):
         return subprocess.check_output(args, text=True, stderr=subprocess.PIPE, timeout=8).strip()
@@ -342,7 +521,16 @@ class LinuxBackend:
             if pid == 0:
                 continue
             for task in (Path("/proc") / str(pid) / "task").iterdir():
-                out.append(self.snapshot({"pid": pid, "tid": int(task.name), "service": service}))
+                ident = {"pid": pid, "tid": int(task.name), "service": service}
+                try:
+                    out.append(self.snapshot(ident))
+                except (FileNotFoundError, ProcessLookupError):
+                    # Untracked candidate, no write-ahead or RPC yet. Only
+                    # confirmed task absence may be skipped; all other errors
+                    # and reused/ambiguous candidates fail closed.
+                    observations = [self.task_lifetime(pid, ident["tid"]) for _ in range(2)]
+                    if observations != [{"exists": False}, {"exists": False}]:
+                        raise
         return out
 
     def require(self, rec, expected):

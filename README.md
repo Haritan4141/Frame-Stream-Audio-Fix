@@ -6,13 +6,15 @@ Upstream: [Proxian/Frame-Stream-Audio-Fix](https://github.com/Proxian/Frame-Stre
 
 - Audited upstream baseline: `69669be81ee3571125ef3ff8a771523b5138c13b`.
 - Upstream script SHA-256: `ee3963c30579ac9ab9002a6503e776b72e2de8a321d9f4224c5f8bcba4f83eb9`.
-- `main` is reserved for upstream history; hardened changes live on `hardened` or explicitly reviewed `hardened/*` branches.
+- `main` is reserved for upstream history; hardened changes live on `hardened` or explicitly reviewed `hardened-*` branches. Git cannot store both a `hardened` ref and nested `hardened/*` refs.
 - Original MIT license and copyright are retained unchanged in [LICENSE](LICENSE). Fork additions are MIT licensed too.
 - The root `frame-stream-audio-fix.sh` is the unchanged upstream baseline for comparison/tests. **Do not run its install/uninstall commands.** The candidate is under `hardened/`.
 
 ## Status and limits
 
-`HARDENED_FIX_READY_FOR_INSTALL_REVIEW` means local source review and fault-injection tests completed, **not** deployment, real RTKit integration acceptance, or a cure for audio dropouts. Deployed commit: **NONE / NOT_INSTALLED** at publication. No headset is contacted by CI.
+This revision is a **LOCAL-ONLY transient lifecycle review candidate, not deployed**. Its base `141f7a2ddd4a93f1b2030077e7a6a59ec4dae125` reached a limited device test but blocked when a dynamically created tracked audio thread exited. The old runtime and unresolved state remain preserved. This branch does not authorize replacing them, starting/recovering/enabling the service, or clearing evidence. No headset is contacted by CI.
+
+`TRANSIENT_LIFECYCLE_FIX_READY_FOR_DEVICE_REVIEW` means local source review and fault-injection tests passed, **not** real RTKit acceptance, successful device recovery, or a cure for audio dropouts. Check the exact commit's Actions results and the separate deployment record. See [lifecycle semantics and review](docs/TRANSIENT-LIFECYCLE.md).
 
 The workaround detects this user's PC stream (`vrlink`) and temporarily requests high-priority normal scheduling for eligible threads of the three audio user services (`pipewire`, `pipewire-pulse`, `wireplumber`). A PipeWire SIGKILL log alone does not prove its sender or exact cause. This workaround cannot guarantee the absence of all SIGKILL causes.
 
@@ -23,7 +25,8 @@ The workaround detects this user's PC stream (`vrlink`) and temporarily requests
 | Original state | Policy including flags, RT priority, nice, UID, PID/TID, process/thread start ticks, names, executable path/device/inode and boot ID. |
 | Durable recovery | Save **before** mutation: strict JSON/checksum, private files, atomic replacement, file/directory fsync, single-writer lock. Recovery precedes new demotion. |
 | Policy | Own approved executables only; RR plus RESET_ON_FORK, original priority 1–80 and nice 0–19. FIFO, unknown policies and unsupported state are skipped with warnings. |
-| Verified restore | Restore nice and RR, reread identity/policy/priority/nice. Remove only verified records; retain failed/stale/corrupt records. |
+| Verified restore | For a surviving identical thread, restore nice and RR and verify identity/policy/priority/nice. Unexpected state remains blocked. |
+| Transient lifecycle | Known-completed TRACKED or pre-dispatch WRITE_AHEAD records with affirmative same-boot exit/reuse proof are archived before retirement. Retirement is NOT restoration. Ambiguous identity, read failures and IN_FLIGHT never auto-retire. |
 | Crash handling | TRACKED records survive a crash. Interrupted/timed-out D-Bus requests stay IN_FLIGHT: no blind retry or false success from one matching snapshot. |
 | Uninstall | Stop, restore/verify, inactive, zero unresolved state, disable/recheck, archive files, reload/verify. Ordinary failure restores moved files and reloads again. |
 | Service | User unit; on-failure restart, exit-4 restart prevention, rate limit, ExecStopPost recovery, restrictive umask. |
@@ -42,7 +45,7 @@ Runtime bytes match the local reviewed candidate; launcher hash alone is insuffi
 
 | File in hardened/ | SHA-256 |
 | --- | --- |
-| frame_audio_guard.py | af8e22bc65fa4c06cc534f2cfbbbf7eabfda66ae11220a9fd70042ad8075b53a |
+| frame_audio_guard.py | c7f754fe50663afc02c8ae3c756a97b827617fdc4ecf223c0e1c6356cb23de97 |
 | frame-stream-audio-fix | 7b92792640f06bb1c947009ace668282dbf483e209a76b15945f4bff7a870b25 |
 | frame-stream-audio-fix.service | 334cce38b707178e1268b4cba5c38b21a3426f443602fde8a82684a3e936e909 |
 
@@ -54,13 +57,14 @@ Python 3.12, standard library only. From the repository root:
 python -B scripts/check_public_tree.py
 cd hardened
 python -B test_guard.py
+python -B -m unittest -v test_lifecycle
 bash -n frame-stream-audio-fix reproduce_upstream_filter.sh
 bash reproduce_upstream_filter.sh
 shellcheck frame-stream-audio-fix reproduce_upstream_filter.sh
 sha256sum -c SHA256SUMS
 ```
 
-The 34-case suite covers successful demote/restore; temporary/partial restore failure and retry; abrupt child termination/recovery; stale identity; uninstall failure/success/rollback; corrupt state; unsupported policy; uncertain RPC completion; path safety and old-boot acknowledgment. Scheduler, RTKit and service operations are fake. Child termination and local temporary filesystem operations are real.
+The original 34 scenarios are retained. One partial-demotion mock is corrected to model the real backend's uncertain D-Bus error; its expectation is strengthened to require retained IN_FLIGHT/no forced restore. The additional 45-case lifecycle suite covers exit/reuse proof, archive durability/failure/corruption, crash-window idempotency, uncertain RPCs, strict scheduler gates, dynamic priority-60 threads, baseline-three-plus-transient round trips, and Linux procfs edge cases. Scheduler, RTKit and service operations are fake. Child termination and local temporary filesystem operations are real. Raw device fixtures remain private; CI uses synthetic equivalents.
 
 GitHub Actions runs Python tests on Ubuntu/Windows and Bash syntax/reproduction/ShellCheck on Ubuntu, plus public-tree/hash checks. Actions are SHA-pinned with read-only repository permissions. No SSH, device secrets or deployment credentials. Generated test reports are not committed. Read CI results for the exact candidate commit.
 
@@ -68,6 +72,8 @@ GitHub Actions runs Python tests on Ubuntu/Windows and Bash syntax/reproduction/
 
 - Actual RTKit/systemd integration and long-duration VRChat/SteamVR/PCVR behavior remain unverified; mocks are not headset tests.
 - Numeric PID/TID APIs cannot atomically accept expected start-time identity. Pre/post checks reduce but cannot eliminate the final reuse/exec race.
+- Tick-resolution start times are not cryptographic identity. Same-tick reuse and unusual procfs namespaces/visibility are residual limitations; ambiguous observed changes block. Do not run inside an alternate PID namespace/procfs or race other scheduling tools.
+- Retirement archives grow with ended tracked lifetimes; there is no automatic pruning. Disk/fsync errors block safely and may require operator review.
 - IN_FLIGHT crashes fail closed, not necessarily auto-recover. Never erase unresolved state or force uninstall. Explicit old-boot archival acknowledgment is not successful restoration.
 - rename/fsync assumes a working supported filesystem. Checksums detect accidental corruption, not deliberate same-user tampering.
 - Hard kill during uninstall may require manual non-overwriting recovery from the retained archive.

@@ -2,6 +2,8 @@
 
 Only use this after separate approval for device installation and a short scheduler round-trip test. Upstream install/uninstall commands and moving branch downloads must not be used.
 
+**Lifecycle development is LOCAL ONLY.** A previously deployed candidate and unresolved state must remain unchanged. This fresh-install procedure is NOT an upgrade procedure for that device. In-place replacement, recover/retire, stop/start/enable or any state/archive change needs a new explicit device-review approval and a separately reviewed non-overwriting migration plan.
+
 ## Pinning on the management host
 
 Use a new empty checkout directory. Replace the placeholder with the full, independently recorded **40-character reviewed commit SHA**, never a branch name:
@@ -89,7 +91,7 @@ bash "$HOME/.local/bin/frame-stream-audio-fix" uninstall
 
 It requests stop; takes the exclusive lock; restores/verifies all records; requires inactive and zero unresolved state; disables/rechecks; archives the three control files in user state; reloads; verifies not-found/inactive/empty FragmentPath. Ordinary exceptions restore moved files and reload again. Unresolved restoration yields UNINSTALL_BLOCKED_RESTORE_FAILED and retains files/state. A rollback reload failure is reported as UNINSTALL_FILES_RESTORED_BUT_ROLLBACK_RELOAD_FAILED. Never force completion by deleting files/state or restarting the OS.
 
-Status is advisory. IN_FLIGHT, stale identity, corrupt/missing state or a hard-killed uninstall require manual review. Preserve evidence and any uninstall archive; propose non-overwriting recovery. Do not restart audio services or the device without approval.
+Status is advisory. IN_FLIGHT, ambiguous identity, corrupt/missing state or a hard-killed uninstall require manual review. Confirmed ended TRACKED/WRITE_AHEAD lifetimes may be archived/retired by the new candidate, never reported as successfully restored. Preserve all retirement/uninstall archives. Do not restart audio services or the device without approval.
 
 ## Explicit old-boot acknowledgment
 

@@ -1,9 +1,9 @@
 name: Verify hardened candidate
 on:
   push:
-    branches: [hardened, 'hardened/**']
+    branches: [hardened, 'hardened-*']
   pull_request:
-    branches: [hardened, 'hardened/**']
+    branches: [hardened, 'hardened-*']
   workflow_dispatch:
 
 permissions:
@@ -29,6 +29,9 @@ jobs:
       - name: Fault injection (fake scheduler and service backends)
         working-directory: hardened
         run: python -B test_guard.py
+      - name: Transient lifecycle and retirement fault injection (no device)
+        working-directory: hardened
+        run: python -B -m unittest -v test_lifecycle
       - name: Bash syntax, upstream regression and ShellCheck
         if: runner.os == 'Linux'
         shell: bash
