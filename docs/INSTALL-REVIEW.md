@@ -2,7 +2,7 @@
 
 Only use this after separate approval for device installation and a short scheduler round-trip test. Upstream install/uninstall commands and moving branch downloads must not be used.
 
-**Lifecycle development is LOCAL ONLY.** A previously deployed candidate and unresolved state must remain unchanged. This fresh-install procedure is NOT an upgrade procedure for that device. In-place replacement, recover/retire, stop/start/enable or any state/archive change needs a new explicit device-review approval and a separately reviewed non-overwriting migration plan.
+**Existing deployment is pinned, not automatically upgraded.** Runtime `69f8e9dcd9199f881fb40bb37178635f559f8ce9` has completed separately approved migration and short acceptance; it is enabled and normal-boot autostart is verified. Long-duration user acceptance remains pending. This fresh-install procedure is NOT an upgrade procedure for that device. In-place replacement, recover/retire, stop/start/enable or any state/archive change still needs explicit device-review approval and an appropriate separately reviewed plan. Preserve unresolved records and all prior evidence; a README update authorizes no device mutation.
 
 ## Pinning on the management host
 

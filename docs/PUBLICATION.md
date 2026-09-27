@@ -5,8 +5,10 @@
 - Baseline: `69669be81ee3571125ef3ff8a771523b5138c13b`
 - Keep upstream ancestry intact. `main` is upstream-only; review updates before fast-forwarding it. No automatic upstream sync.
 - `hardened` contains the separately reviewed candidate. Do not install merely because this branch moved. Review each new revision and pin a full commit SHA outside the moving branch.
-- `hardened-transient-lifecycle` is a LOCAL-only successor candidate based on `141f7a2ddd4a93f1b2030077e7a6a59ec4dae125`. Keep the baseline commit and deployed runtime/state untouched. The new branch is not device deployment authority.
+- On 2026-09-27, `hardened` was fast-forwarded from `141f7a2ddd4a93f1b2030077e7a6a59ec4dae125` to the deployed and short-accepted `69f8e9dcd9199f881fb40bb37178635f559f8ce9`, after rechecking ancestry and exact-commit successful Ubuntu/Windows/ShellCheck CI. `main` remains `69669be81ee3571125ef3ff8a771523b5138c13b`; default branch remains `hardened`. No force push or history rewrite.
+- `hardened-transient-lifecycle` retains the same runtime commit as history. `hardened-docs-boot-autostart` carries only later documentation; keep its documentation commit distinct from the deployed runtime commit. Neither moving ref is automatic deployment authority.
 - Deployed commit at initial publication: **NONE / NOT_INSTALLED**. Repository publication is not headset deployment.
+- Current deployment: runtime `69f8e9dcd9199f881fb40bb37178635f559f8ce9`, short acceptance passed, enabled/active, Boot Autostart VERIFIED / PASS; long-duration user test IN PROGRESS / NOT YET PASS. See the README for verification scope. Previous blocked evidence remains private and is not erased by promotion.
 - Preserve MIT LICENSE/copyright. The original root script is comparison evidence, not the hardened installer.
 - Publication includes an explicit allowlist of runtime, tests, workflow and generic docs. Excludes private audit logs, actual boot IDs, network identity, SSH materials, credentials, generated logs, user-specific local paths and private management files.
 - Generic runtime paths (`~/.local/bin`, `~/.config/systemd/user`, `~/.local/state`), the product-default frame/steamos identity gate and synthetic test values are functional documentation, not private host inventory.

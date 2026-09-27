@@ -1,8 +1,8 @@
-# Transient audio thread lifecycle — local review
+# Transient audio thread lifecycle — design and review
 
 Base: `141f7a2ddd4a93f1b2030077e7a6a59ec4dae125`. Upstream baseline remains `69669be81ee3571125ef3ff8a771523b5138c13b`; original script and MIT notices are unchanged.
 
-No device access or deployment is performed by this phase. Previously deployed files, failed/disabled service and preserved unresolved state remain untouched. Readiness requires exact-commit Ubuntu/Windows CI, ShellCheck, local fixture validation and source review. These are not real-device or long-session audio acceptance.
+The original LOCAL-only development phase performed no device access or deployment and preserved the then-blocked device evidence. Subsequent separately approved migration and short acceptance of runtime `69f8e9dcd9199f881fb40bb37178635f559f8ce9` completed on 2026-09-27, followed by read-only normal-boot autostart and retrospective sleep/resume checks. See [current status and limits](../README.md#status-and-limits). This document retains the design/local-test rationale; those local tests alone are not real-device or long-session audio acceptance.
 
 ## Why not a three-thread allowlist
 
@@ -34,7 +34,7 @@ The baseline wrote TRACKED immediately after an acknowledged RPC, before the get
 
 New RPC paths retain IN_FLIGHT until the post-RPC getter verifies expected identity and scheduler values. If the task exits after acknowledgment but before verification, they conservatively block. Nonzero/timeout D-Bus replies stay uncertain. A crash before persisting IN_FLIGHT leaves WRITE_AHEAD and necessarily no dispatch; a crash after persistence, even before actual dispatch, stays conservative IN_FLIGHT. No new schema phase or unsafe automatic RPC retry is introduced.
 
-Restore starts only from the exact original state or exact OTHER|RESET/0/nice-11 demotion. Half-looking states such as OTHER/nice0 or RR/nice-11 in TRACKED are not attributed to this guard and are blocked. To avoid creating an ambiguous TRACKED intermediate, restore requests RR first, verifies RR/original priority/nice-11, then resets nice and verifies the full original state while RESTORE_IN_FLIGHT remains durable. A failure in that final stage stays blocked. The changed restore order needs a new real-device review; local mocks do not establish RTKit integration success.
+Restore starts only from the exact original state or exact OTHER|RESET/0/nice-11 demotion. Half-looking states such as OTHER/nice0 or RR/nice-11 in TRACKED are not attributed to this guard and are blocked. To avoid creating an ambiguous TRACKED intermediate, restore requests RR first, verifies RR/original priority/nice-11, then resets nice and verifies the full original state while RESTORE_IN_FLIGHT remains durable. A failure in that final stage stays blocked. This restore order subsequently passed the separately observed short real-device trial for the pinned runtime; local mocks alone do not establish RTKit integration success on any device.
 
 ## Durable audit protocol
 
@@ -57,4 +57,4 @@ Private Linux mode is 0700 for retirement directory and 0600 for files. Windows 
 - CI has Ubuntu and Windows jobs for both suites, plus ShellCheck/Bash validation on Ubuntu and publication/hash/privacy gates on both.
 - A PRIVATE management-host test uses the exact preserved v1 state bytes, asserts its existing SHA256 and source immutability, supplies mock task-exit evidence, and verifies archive1 / active0 / zero scheduler operations. Public tests use synthetic equivalent records; private boot IDs, raw device logs and local paths are not published.
 
-Remaining limitations: numeric PID/TID operations have a final precheck-to-syscall/RPC race; start ticks have finite resolution; alternate procfs visibility/namespaces are unsupported; a task disappearing in other mutation windows may conservatively block. Disk/fsync failures or full archive storage block. No claim of an exact native real-device round trip or audio cure follows from these tests. The existing device state must not be removed or recovered without separate approval.
+Remaining limitations: numeric PID/TID operations have a final precheck-to-syscall/RPC race; start ticks have finite resolution; alternate procfs visibility/namespaces are unsupported; a task disappearing in other mutation windows may conservatively block. Disk/fsync failures or full archive storage block. No audio-cure claim follows from local tests or the subsequent short real-device acceptance. Existing device state must not be removed or recovered without separate approval.

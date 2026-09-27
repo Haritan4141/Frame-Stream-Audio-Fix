@@ -12,9 +12,13 @@ Upstream: [Proxian/Frame-Stream-Audio-Fix](https://github.com/Proxian/Frame-Stre
 
 ## Status and limits
 
-This revision is a **LOCAL-ONLY transient lifecycle review candidate, not deployed**. Its base `141f7a2ddd4a93f1b2030077e7a6a59ec4dae125` reached a limited device test but blocked when a dynamically created tracked audio thread exited. The old runtime and unresolved state remain preserved. This branch does not authorize replacing them, starting/recovering/enabling the service, or clearing evidence. No headset is contacted by CI.
+Deployed runtime commit: **`69f8e9dcd9199f881fb40bb37178635f559f8ce9`**. On 2026-09-27 it passed all 15 short real-device acceptance gates and was explicitly enabled. The `hardened` branch was fast-forwarded to this runtime commit without changing `main` or rewriting history. This later documentation revision does not change or redeploy the runtime.
 
-`TRANSIENT_LIFECYCLE_FIX_READY_FOR_DEVICE_REVIEW` means local source review and fault-injection tests passed, **not** real RTKit acceptance, successful device recovery, or a cure for audio dropouts. Check the exact commit's Actions results and the separate deployment record. See [lifecycle semantics and review](docs/TRANSIENT-LIFECYCLE.md).
+**Acceptance state: `AUDIO_FIX_ENABLED_READY_FOR_USER_LONG_TEST`.** Boot Autostart is **VERIFIED / PASS** after an operator's normal reboot. Read-only verification found the user service enabled/active/running, no automatic restarts, zero pending restoration records, all three audio services active, and no current-boot PipeWire SIGKILL or Fix WARNING/GUARD_BLOCKED/UNRESOLVED entries. Sleep/Resume is **VERIFIED / PASS within retrospective log and service-health scope**: retained logs show suspend/resume and no new relevant warning/SIGKILL after the accepted runtime was enabled. This is not a live audio-quality or streaming-during-suspend test.
+
+The short trial independently measured the stable three realtime workers and a newly created priority-60 audio-filter thread changing to OTHER|RESET / priority 0 / nice -11 while alive. The transient then ended and was archived as `RETIRED_EXITED_TRACKED_THREAD` (not restored); stream end restored the stable workers to RR|RESET / priority 80 / nice 0. All 13 baseline thread identities/schedulers matched, active state was empty and three retirement archives were retained. The stop test used the explicitly approved one-time post-stop recovery fallback because the short-lived ExecStopPost exit metadata was unavailable; the fallback exited 0 with state/scheduler/archive unchanged.
+
+Long-duration VRChat/SteamVR/PCVR testing is **IN PROGRESS / NOT YET PASS**. Do not treat the short acceptance, boot test or local CI as a cure for audio dropouts. Prior blocked trials and migration evidence remain in the private deployment record. New installation, replacement, service control or evidence cleanup still requires separate approval; CI does not contact a headset. See [lifecycle semantics and review](docs/TRANSIENT-LIFECYCLE.md) and [publication policy](docs/PUBLICATION.md).
 
 The workaround detects this user's PC stream (`vrlink`) and temporarily requests high-priority normal scheduling for eligible threads of the three audio user services (`pipewire`, `pipewire-pulse`, `wireplumber`). A PipeWire SIGKILL log alone does not prove its sender or exact cause. This workaround cannot guarantee the absence of all SIGKILL causes.
 
@@ -39,9 +43,9 @@ No sudo/root, readonly disable, package installation, system-directory changes, 
 
 **Never install from a moving main or branch URL.** Use an independently reviewed full 40-character commit SHA, fetch/check out that exact commit, inspect the diff and verify `hardened/SHA256SUMS` before any device changes. A branch name or hash manifest alone is not proof of trust.
 
-See [INSTALL-REVIEW.md](docs/INSTALL-REVIEW.md) for the future-only non-overwriting installation/removal plan. There is no automatic installer, updater or deploy workflow. Installation and short real-device scheduler round-trip tests require separate approval.
+See [INSTALL-REVIEW.md](docs/INSTALL-REVIEW.md) for the non-overwriting fresh-install/removal review plan, not an upgrade command for an existing deployment. There is no automatic installer, updater or deploy workflow. Further installation and real-device tests require separate approval.
 
-Runtime bytes match the local reviewed candidate; launcher hash alone is insufficient:
+Runtime bytes match the pinned, deployed runtime commit; launcher hash alone is insufficient. A documentation-only commit is not a new deployment approval:
 
 | File in hardened/ | SHA-256 |
 | --- | --- |
@@ -70,7 +74,7 @@ GitHub Actions runs Python tests on Ubuntu/Windows and Bash syntax/reproduction/
 
 ## Residual risks
 
-- Actual RTKit/systemd integration and long-duration VRChat/SteamVR/PCVR behavior remain unverified; mocks are not headset tests.
+- Short real-device RTKit/systemd scheduler/lifecycle acceptance and normal-boot autostart passed on the tested device. Long-duration VRChat/SteamVR/PCVR behavior, crackle under load, repeated reconnects and standalone audio still need user testing; this does not certify every device or workload.
 - Numeric PID/TID APIs cannot atomically accept expected start-time identity. Pre/post checks reduce but cannot eliminate the final reuse/exec race.
 - Tick-resolution start times are not cryptographic identity. Same-tick reuse and unusual procfs namespaces/visibility are residual limitations; ambiguous observed changes block. Do not run inside an alternate PID namespace/procfs or race other scheduling tools.
 - Retirement archives grow with ended tracked lifetimes; there is no automatic pruning. Disk/fsync errors block safely and may require operator review.
